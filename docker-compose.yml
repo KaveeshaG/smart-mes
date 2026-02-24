@@ -1,0 +1,192 @@
+version: '3.8'
+
+services:
+  # Database for device metadata
+  postgres:
+    image: postgres:15-alpine
+    container_name: mes-postgres
+    environment:
+      POSTGRES_DB: smart_mes
+      POSTGRES_USER: mes
+      POSTGRES_PASSWORD: mes123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mes -d smart_mes"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mes-network
+
+  # Time-series database for sensor data
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: mes-timescale
+    environment:
+      POSTGRES_DB: mes_timeseries
+      POSTGRES_USER: mes
+      POSTGRES_PASSWORD: mes123
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mes -d mes_timeseries"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mes-network
+
+  # Message broker for inter-service communication
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: mes-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: mes
+      RABBITMQ_DEFAULT_PASS: mes123
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mes-network
+
+  # Cache and pub/sub
+  redis:
+    image: redis:7-alpine
+    container_name: mes-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mes-network
+
+  # Service 1+2: Device Management (Discovery + Registry)
+  device-management:
+    build:
+      context: ./services/device-management-service
+      dockerfile: Dockerfile
+    container_name: mes-device-management
+    ports:
+      - "8001:8001"
+    environment:
+      - SERVICE_NAME=device-management
+      - DATABASE_URL=postgresql+asyncpg://neondb_owner:npg_VwE71dQgTcvz@ep-royal-rain-ai64r2np-pooler.c-4.us-east-1.aws.neon.tech/smart-mes?ssl=require
+      - RABBITMQ_URL=amqp://mes:mes123@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mes-network
+    volumes:
+      - ./services/device-management-service/src:/app/src:ro
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    privileged: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Service 3: Data Collector (FINS/Modbus/OPC UA)
+  data-collector:
+    build:
+      context: ./services/data-collector-service
+      dockerfile: Dockerfile
+    container_name: mes-data-collector
+    ports:
+      - "8003:8003"
+    environment:
+      - SERVICE_NAME=data-collector
+      - DATABASE_URL=postgresql+asyncpg://neondb_owner:npg_VwE71dQgTcvz@ep-royal-rain-ai64r2np-pooler.c-4.us-east-1.aws.neon.tech/smart-mes?ssl=require
+      - TIMESCALE_URL=postgresql+asyncpg://mes:mes123@timescaledb:5432/mes_timeseries
+      - RABBITMQ_URL=amqp://mes:mes123@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=INFO
+      - DEVICE_MANAGEMENT_URL=http://device-management:8001
+      - POLL_INTERVAL_SECONDS=5
+      - CONTINUOUS_POLLING_ENABLED=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      device-management:
+        condition: service_started
+    networks:
+      - mes-network
+    volumes:
+      - ./services/data-collector-service/src:/app/src:ro
+    privileged: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Service 4: Production Management
+  production:
+    build:
+      context: ./services/production-service
+      dockerfile: Dockerfile
+    container_name: mes-production
+    ports:
+      - "8002:8002"
+    environment:
+      - SERVICE_NAME=production
+      - DATABASE_URL=postgresql+asyncpg://neondb_owner:npg_VwE71dQgTcvz@ep-royal-rain-ai64r2np-pooler.c-4.us-east-1.aws.neon.tech/smart-mes?ssl=require
+      - RABBITMQ_URL=amqp://mes:mes123@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=INFO
+      - DEVICE_MANAGEMENT_URL=http://device-management:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mes-network
+    volumes:
+      - ./services/production-service/src:/app/src:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres_data:
+  timescale_data:
+
+networks:
+  mes-network:
+    driver: bridge
