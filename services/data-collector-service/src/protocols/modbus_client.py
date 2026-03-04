@@ -178,6 +178,56 @@ class ModbusTCPClient(ProtocolClient):
             logger.error(f"Failed to write {tag.name}: {e}")
             return False
     
+    async def change_plc_mode(self, run: bool, **kwargs) -> bool:
+        """Change PLC mode via a control register (holding register).
+
+        For Modbus PLCs that lack native RUN/STOP commands, a designated
+        holding register is used as a 'Run Enable' flag.  The PLC ladder
+        program must check this register to allow or block execution.
+
+        kwargs:
+            control_register: Modbus address string, e.g. "40100"
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected to device")
+
+        control_register = kwargs.get("control_register")
+        if not control_register:
+            raise ValueError(
+                "No control_register configured for this Modbus device. "
+                "Set the Run Enable Register address in device settings."
+            )
+
+        address, function_code = self._parse_address(str(control_register))
+
+        if function_code == "coil":
+            value = run
+            response = await self.client.write_coil(
+                address=address, value=bool(value), slave=self.unit_id
+            )
+        elif function_code == "holding_register":
+            value = 1 if run else 0
+            response = await self.client.write_register(
+                address=address, value=value, slave=self.unit_id
+            )
+        else:
+            raise ValueError(
+                f"Control register {control_register} must be a coil (0xxxx) "
+                f"or holding register (4xxxx)"
+            )
+
+        success = not response.isError()
+        mode_label = "RUN (1)" if run else "STOP (0)"
+        if success:
+            logger.info(
+                f"✓ Modbus control register {control_register} set to {mode_label}"
+            )
+        else:
+            logger.error(
+                f"✗ Failed to write {mode_label} to control register {control_register}"
+            )
+        return success
+
     async def read_multiple(self, tags: List[Tag]) -> List[TagReading]:
         """Read multiple tags"""
         readings = []

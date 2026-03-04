@@ -329,6 +329,21 @@ class DeviceRegistry:
         logger.info(f"Device {device_id} machine_status → {status}")
         return DeviceResponse.model_validate(device)
 
+    async def update_control_register(
+        self,
+        device_id: UUID,
+        control_register: Optional[str],
+        db: AsyncSession
+    ) -> Optional[DeviceResponse]:
+        device = await db.get(DeviceModel, device_id)
+        if not device:
+            return None
+        device.control_register = control_register
+        await db.commit()
+        await db.refresh(device)
+        logger.info(f"Device {device_id} control_register → {control_register}")
+        return DeviceResponse.model_validate(device)
+
     async def _find_by_ip(
         self,
         ip_address: str,

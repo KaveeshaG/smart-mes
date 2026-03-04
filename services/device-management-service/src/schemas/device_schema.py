@@ -15,6 +15,7 @@ class DeviceRegisterRequest(BaseModel):
     description: Optional[str] = None
     location: Optional[str] = None
     machine_status: Optional[str] = "standby"
+    control_register: Optional[str] = None
 
 class DeviceResponse(BaseModel):
     id: UUID
@@ -30,6 +31,7 @@ class DeviceResponse(BaseModel):
     last_seen: Optional[datetime]
     created_at: datetime
     machine_status: str = "standby"
+    control_register: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -38,6 +40,12 @@ VALID_MACHINE_STATUSES = {"standby", "maintenance", "changeover", "service"}
 
 class MachineStatusRequest(BaseModel):
     status: str = Field(..., description="Machine status: standby, maintenance, changeover, service")
+
+class ControlRegisterRequest(BaseModel):
+    control_register: Optional[str] = Field(
+        None,
+        description="Modbus address for run-enable register (e.g. '40100'). Set to null to clear."
+    )
 
 class TagSchema(BaseModel):
     name: str = Field(..., description="Tag name (e.g., 'Temperature_1')")

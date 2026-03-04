@@ -25,6 +25,7 @@ class DeviceModel(Base):
     description = Column(String(500), nullable=True)
     location = Column(String(200), nullable=True)
     machine_status = Column(String(20), default="standby")
+    control_register = Column(String(20), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     discovery_metadata = Column(JSON, default=dict)

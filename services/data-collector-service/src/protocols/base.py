@@ -59,8 +59,9 @@ class ProtocolClient(ABC):
         """Write single tag value"""
         pass
 
-    async def change_plc_mode(self, run: bool) -> bool:
+    async def change_plc_mode(self, run: bool, **kwargs) -> bool:
         """Change PLC operating mode. True=RUN, False=STOP/PROGRAM.
+        kwargs may include control_register for Modbus devices.
         Default no-op for protocols that don't support mode changes."""
         return True
 

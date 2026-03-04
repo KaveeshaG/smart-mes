@@ -153,7 +153,7 @@ class FINSClient(ProtocolClient):
         response = await self._send_command(command)
         return self._check_write_response(response)
     
-    async def change_plc_mode(self, run: bool) -> bool:
+    async def change_plc_mode(self, run: bool, **kwargs) -> bool:
         """Switch PLC between RUN and PROGRAM mode using FINS commands 0401/0402."""
         if not self._connected:
             raise RuntimeError("Not connected to PLC")

@@ -11,6 +11,7 @@ from ...schemas.device_schema import (
     TagResponse,
     TagUpdateRequest,
     MachineStatusRequest,
+    ControlRegisterRequest,
     VALID_MACHINE_STATUSES,
 )
 
@@ -75,6 +76,18 @@ async def update_machine_status(
             detail=f"Invalid status '{request.status}'. Must be one of: {', '.join(sorted(VALID_MACHINE_STATUSES))}"
         )
     device = await registry.update_machine_status(device_id, request.status, db)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return device
+
+@router.patch("/{device_id}/control-register", response_model=DeviceResponse)
+async def update_control_register(
+    device_id: UUID,
+    request: ControlRegisterRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Set or clear the Modbus run-enable control register for a device."""
+    device = await registry.update_control_register(device_id, request.control_register, db)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     return device
