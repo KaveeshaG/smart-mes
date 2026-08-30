@@ -3,9 +3,9 @@ from pydantic import Field
 
 
 class Settings(BaseSettings):
-    database_url: str = Field(
-        default="postgresql+asyncpg://neondb_owner:npg_VwE71dQgTcvz@ep-royal-rain-ai64r2np-pooler.c-4.us-east-1.aws.neon.tech/smart-mes?ssl=require"
-    )
+    # No hardcoded default — must come from the environment (.env / compose).
+    # A prior default here baked a live Neon password into source control.
+    database_url: str
     rabbitmq_url: str = Field(default="amqp://mes:mes123@localhost:5672/")
     redis_url: str = Field(default="redis://localhost:6379")
     log_level: str = "INFO"

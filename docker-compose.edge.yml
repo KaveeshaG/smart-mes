@@ -1,0 +1,93 @@
+version: '3.8'
+
+# ── EDGE deployment ────────────────────────────────────────────────────────
+# Runs on a machine physically on the same LAN as the PLCs (your dev box,
+# or a dedicated mini-PC/Raspberry Pi near the line). Anything that needs
+# NET_ADMIN/raw sockets to scan or poll real hardware lives here — it can
+# never move to a cloud VM, because the cloud has no route to your local
+# subnet.
+#
+# CLOUD_HOST below is this node's Tailscale MagicDNS name for the cloud VM
+# (docker-compose.cloud.yml), e.g. "cloud-vm.your-tailnet.ts.net". Set it in
+# .env.edge alongside CLOUD_HOST-dependent secrets.
+#
+# Run with:  docker compose -f docker-compose.edge.yml --env-file .env.edge up -d
+
+services:
+  # Time-series store for sensor data. Kept local: data-collector is its
+  # only consumer, and this avoids shipping every raw reading over the
+  # internet link just to store it.
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: mes-timescale
+    environment:
+      POSTGRES_DB: mes_timeseries
+      POSTGRES_USER: mes
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mes -d mes_timeseries"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  device-management:
+    build:
+      context: ./services/device-management-service
+      dockerfile: Dockerfile
+    container_name: mes-device-management
+    ports:
+      - "8001:8001"
+    environment:
+      - SERVICE_NAME=device-management
+      - DATABASE_URL=${DATABASE_URL}                 # Neon — already cloud, reachable from anywhere
+      - RABBITMQ_URL=amqp://mes:${RABBITMQ_PASSWORD}@${CLOUD_HOST}:5672/
+      - REDIS_URL=redis://${CLOUD_HOST}:6379
+      - LOG_LEVEL=INFO
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    privileged: true                                  # needed for subnet scanning — keep this off the internet-facing side
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  data-collector:
+    build:
+      context: ./services/data-collector-service
+      dockerfile: Dockerfile
+    container_name: mes-data-collector
+    ports:
+      - "8003:8003"
+    environment:
+      - SERVICE_NAME=data-collector
+      - DATABASE_URL=${DATABASE_URL}
+      - TIMESCALE_URL=postgresql+asyncpg://mes:${TIMESCALE_PASSWORD}@timescaledb:5432/mes_timeseries
+      - RABBITMQ_URL=amqp://mes:${RABBITMQ_PASSWORD}@${CLOUD_HOST}:5672/
+      - REDIS_URL=redis://${CLOUD_HOST}:6379
+      - LOG_LEVEL=INFO
+      - DEVICE_MANAGEMENT_URL=http://device-management:8001
+      - POLL_INTERVAL_SECONDS=5
+      - CONTINUOUS_POLLING_ENABLED=true
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      device-management:
+        condition: service_started
+    privileged: true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  timescale_data:

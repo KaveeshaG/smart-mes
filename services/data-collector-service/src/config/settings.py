@@ -2,9 +2,9 @@ from pydantic_settings import BaseSettings
 from pydantic import Field
 
 class Settings(BaseSettings):
-    database_url: str = Field(
-        default="postgresql+asyncpg://neondb_owner:npg_VwE71dQgTcvz@ep-royal-rain-ai64r2np-pooler.c-4.us-east-1.aws.neon.tech/smart-mes?ssl=require"
-    )
+    # No hardcoded default — must come from the environment (.env / compose).
+    # A prior default here baked a live Neon password into source control.
+    database_url: str
     timescale_url: str = Field(
         default="postgresql+asyncpg://mes:mes123@localhost:5433/mes_timeseries"
     )

@@ -114,7 +114,7 @@ class FINSClient(ProtocolClient):
         
         # Determine if bit or word access
         if bit is not None:
-            # Bit access
+            # Bit access (bit 0 is valid — CP2E returns 1 byte for all bit positions)
             command = self._build_read_bit_command(area_code, address, bit)
             response = await self._send_command(command)
             value = self._parse_read_bit_response(response)
@@ -144,7 +144,7 @@ class FINSClient(ProtocolClient):
         area_code = self.MEMORY_AREAS.get(area_str.upper())
         
         if bit is not None:
-            # Bit write
+            # Bit write (CP2E handles all bit positions 0-15 correctly)
             command = self._build_write_bit_command(area_code, address, bit, bool(value))
         else:
             # Word write
@@ -218,6 +218,19 @@ class FINSClient(ProtocolClient):
         ])
 
         return command
+
+    async def probe(self) -> bool:
+        """Send a lightweight FINS read to verify the TCP connection is still alive."""
+        if not self._connected or self.writer is None or self.writer.is_closing():
+            return False
+        try:
+            command = self._build_read_command(0x02, 0, 1)  # Read DM0, 1 word
+            await asyncio.wait_for(self._send_command(command), timeout=2.0)
+            return True
+        except Exception as e:
+            logger.warning(f"FINS probe failed for {self.ip}:{self.port} — {e}")
+            self._connected = False
+            return False
 
     async def read_multiple(self, tags: List[Tag]) -> List[TagReading]:
         """Read multiple tags sequentially"""

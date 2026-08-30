@@ -41,7 +41,8 @@ class ConnectionManager:
             ip_address=ip_address,
             port=port,
             protocol=protocol,
-            client=client
+            client=client,
+            connect_kwargs=dict(kwargs),
         )
 
         self._connections[device_id] = connection
@@ -56,11 +57,12 @@ class ConnectionManager:
         protocol: str,
         max_retries: int = 3,
         retry_delay: float = 5.0,
+        **kwargs,
     ) -> bool:
         """Connect with exponential backoff retries."""
         delay = retry_delay
         for attempt in range(1, max_retries + 1):
-            success = await self.connect_device(device_id, ip_address, port, protocol)
+            success = await self.connect_device(device_id, ip_address, port, protocol, **kwargs)
             if success:
                 return True
             if attempt < max_retries:
@@ -81,6 +83,7 @@ class ConnectionManager:
         ip_address: str,
         port: int,
         protocol: str,
+        **kwargs,
     ) -> bool:
         """Check connection health; reconnect with retry if dead."""
         if self.is_connected(device_id):
@@ -95,7 +98,7 @@ class ConnectionManager:
                 pass
             del self._connections[device_id]
 
-        return await self.connect_with_retry(device_id, ip_address, port, protocol)
+        return await self.connect_with_retry(device_id, ip_address, port, protocol, **kwargs)
 
     async def disconnect_device(self, device_id: str) -> bool:
         """Disconnect from a device"""
@@ -114,9 +117,45 @@ class ConnectionManager:
         return self._connections.get(device_id)
 
     def is_connected(self, device_id: str) -> bool:
-        """Check if device is connected"""
+        """Check if device is connected (cached flag — use probe_device for accuracy)."""
         connection = self._connections.get(device_id)
         return connection is not None and connection.client.is_connected
+
+    async def probe_device(self, device_id: str) -> bool:
+        """Actively probe the device. If unreachable, attempts one reconnect using
+        the original connection params. Returns True if the device is reachable."""
+        connection = self._connections.get(device_id)
+        if connection is None:
+            return False
+
+        alive = await connection.client.probe()
+        if alive:
+            return True
+
+        # Probe failed — device may have gone offline temporarily. Try to reconnect.
+        logger.info(
+            f"[{device_id}] offline — reconnecting to "
+            f"{connection.ip_address}:{connection.port} ({connection.protocol})"
+        )
+        saved_tags = dict(connection.tags or {})
+        try:
+            await connection.client.disconnect()
+        except Exception:
+            pass
+        self._connections.pop(device_id, None)
+
+        success = await self.connect_device(
+            device_id=device_id,
+            ip_address=connection.ip_address,
+            port=connection.port,
+            protocol=connection.protocol,
+            **connection.connect_kwargs,
+        )
+
+        if success and saved_tags:
+            self.register_tags(device_id, list(saved_tags.values()))
+
+        return success
 
     def register_tags(self, device_id: str, tags: List[Tag]) -> None:
         """Register tags for a device"""

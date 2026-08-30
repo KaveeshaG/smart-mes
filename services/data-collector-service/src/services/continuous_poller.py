@@ -86,10 +86,12 @@ class ContinuousPoller:
         now = asyncio.get_event_loop().time()
         if now - self._last_device_refresh < self._settings.device_refresh_interval_seconds:
             return
-        await self._refresh_devices()
-        self._last_device_refresh = now
+        success = await self._refresh_devices()
+        # Only advance the clock on success; on failure, retry on the next cycle.
+        if success:
+            self._last_device_refresh = now
 
-    async def _refresh_devices(self):
+    async def _refresh_devices(self) -> bool:
         base = self._settings.device_management_url
         try:
             async with httpx.AsyncClient(timeout=10) as http:
@@ -110,8 +112,10 @@ class ContinuousPoller:
                     f"Device list refreshed: {len(devices)} device(s), "
                     f"{sum(len(t) for t in device_tags.values())} tag(s)"
                 )
+                return True
         except Exception as exc:
             logger.warning(f"Failed to refresh device list: {exc}")
+            return False
 
     # ── polling ──────────────────────────────────────────────
 
@@ -130,24 +134,33 @@ class ContinuousPoller:
     async def _poll_device(self, device: Dict[str, Any]):
         dev_id = device["id"]
         ip = device["ip_address"]
-        port = device.get("port") or 502
         protocol = device.get("primary_protocol", "modbus_tcp")
+        # Protocol-aware port selection.
+        # Devices registered before the port field was properly exposed may have the
+        # other protocol's default (e.g., a FINS device stored as port 502).  In that
+        # case treat the value as unset and fall back to the correct protocol default.
+        default_port = 9600 if protocol == "fins" else 502
+        wrong_default = 502 if protocol == "fins" else 9600
+        raw_port = device.get("port") or 0
+        port = raw_port if (raw_port and raw_port != wrong_default) else default_port
+        unit_id = device.get("modbus_unit_id") or 1
         tags_data = self._device_tags.get(dev_id, [])
 
         if not tags_data:
             return
 
-        # Ensure connection is alive (Phase 3 resilience)
-        await self._cm.ensure_connected(dev_id, ip, port, protocol)
+        # Ensure connection is alive — single attempt so one offline device
+        # doesn't block the rest of the poll cycle.
+        if not self._cm.is_connected(dev_id):
+            await self._cm.connect_device(dev_id, ip, port, protocol, unit_id=unit_id)
 
         if not self._cm.is_connected(dev_id):
             return
 
-        # Register tags if not already present
-        connection = self._cm.get_connection(dev_id)
-        if connection and not connection.tags:
-            tag_objs = self._build_tags(tags_data)
-            self._cm.register_tags(dev_id, tag_objs)
+        # Always sync the tag list from DB into the connection so that tags
+        # added or renamed via the UI are picked up on the next poll cycle.
+        tag_objs = self._build_tags(tags_data)
+        self._cm.register_tags(dev_id, tag_objs)
 
         tag_names = [t["name"] for t in tags_data]
         readings = await self._reader.read_multiple(dev_id, tag_names)

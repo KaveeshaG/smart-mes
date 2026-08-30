@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from ...api.v1.read import connection_manager
@@ -66,8 +67,14 @@ async def disconnect_device(device_id: str):
 
 @router.get("/status/{device_id}")
 async def get_device_status(device_id: str):
-    """Get device connection status"""
-    is_connected = connection_manager.is_connected(device_id)
+    """Get device connection status via active probe (includes auto-reconnect on recovery)."""
+    try:
+        is_connected = await asyncio.wait_for(
+            connection_manager.probe_device(device_id),
+            timeout=8.0,  # 2s probe + up to 5s reconnect; cap so frontend never hangs
+        )
+    except asyncio.TimeoutError:
+        is_connected = False
     return {
         "device_id": device_id,
         "connected": is_connected

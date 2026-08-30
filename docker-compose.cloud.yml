@@ -1,0 +1,141 @@
+version: '3.8'
+
+# ── CLOUD deployment ───────────────────────────────────────────────────────
+# Runs on the free-tier VM (e.g. Oracle Cloud Always Free ARM instance).
+# Nothing here needs raw sockets or LAN access — it's the "brain and face"
+# of the system: AI reasoning, production tracking, the dashboard, and the
+# shared message bus/cache that both this VM and the edge node use.
+#
+# EDGE_HOST is the edge node's Tailscale MagicDNS name, e.g.
+# "edge-box.your-tailnet.ts.net". Set it (and secrets) in .env.cloud.
+# Both this VM and the edge node must be joined to the same Tailscale
+# network first — see DEPLOYMENT.md.
+#
+# Caddy is the ONLY thing with a public port. It fans requests out to the
+# frontend, to the cloud-local services, and — over the private Tailscale
+# link — to the edge node's APIs. Browsers never talk to the edge node
+# directly, so device-management/data-collector are never internet-exposed.
+#
+# Run with:  docker compose -f docker-compose.cloud.yml --env-file .env.cloud up -d
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: mes-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: mes-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: mes
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "5672:5672"       # AMQP — must stay reachable from the edge node over Tailscale
+    # NOTE: no public port mapping for 15672 (management UI) — reach it via
+    # `tailscale ssh` / a local SSH tunnel instead of exposing it.
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ai-agent:
+    build:
+      context: ./services/ai-agent-service
+      dockerfile: Dockerfile
+    container_name: mes-ai-agent
+    environment:
+      - SERVICE_NAME=ai-agent
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379
+      - DEVICE_MANAGEMENT_URL=http://${EDGE_HOST}:8001
+      - DATA_COLLECTOR_URL=http://${EDGE_HOST}:8003
+      # Cloud demo runs the fast/cheap cloud path. The Ollama comparison is a
+      # controlled local experiment (see llm_service.py) — deliberately NOT
+      # reproduced on the free-tier VM, which has neither the RAM nor the
+      # CPU to give representative local-inference numbers.
+      - LLM_PROVIDER=anthropic
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_MODEL=claude-haiku-4-5-20251001
+      - LLM_TIMEOUT_SECONDS=4.0
+      - ZSCORE_WINDOW=100
+      - ZSCORE_THRESHOLD=3.0
+      - MIN_READINGS_FOR_BASELINE=10
+      - POLL_INTERVAL_SECONDS=5.0
+      - MAX_CONCURRENT_ANOMALY_HANDLERS=10
+      - LOG_LEVEL=INFO
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  production:
+    build:
+      context: ./services/production-service
+      dockerfile: Dockerfile
+    container_name: mes-production
+    environment:
+      - SERVICE_NAME=production
+      - DATABASE_URL=${DATABASE_URL}
+      - RABBITMQ_URL=amqp://mes:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      - REDIS_URL=redis://redis:6379
+      - LOG_LEVEL=INFO
+      - DEVICE_MANAGEMENT_URL=http://${EDGE_HOST}:8001
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mes-frontend
+    environment:
+      # Same-origin paths — Caddy fans these out. No localhost anywhere.
+      - NEXT_PUBLIC_DEVICE_MANAGEMENT_URL=/api/device-mgmt
+      - NEXT_PUBLIC_DATA_COLLECTOR_URL=/api/data-collector
+      - NEXT_PUBLIC_AI_AGENT_URL=/api/ai-agent
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: mes-caddy
+    environment:
+      - PUBLIC_DOMAIN=${PUBLIC_DOMAIN}   # only used if you have a domain — see DEPLOYMENT.md for the no-domain (Tailscale Funnel) option
+      - EDGE_HOST=${EDGE_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - ai-agent
+      - production
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

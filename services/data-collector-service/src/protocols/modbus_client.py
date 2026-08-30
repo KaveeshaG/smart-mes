@@ -228,6 +228,25 @@ class ModbusTCPClient(ProtocolClient):
             )
         return success
 
+    async def probe(self) -> bool:
+        """Send a lightweight Modbus read to verify the TCP connection is still alive."""
+        if not self._connected or self.client is None:
+            return False
+        try:
+            result = await asyncio.wait_for(
+                self.client.read_holding_registers(address=0, count=1, slave=self.unit_id),
+                timeout=2.0,
+            )
+            # Any Modbus response (even a protocol error) means the PLC answered
+            alive = result is not None and not isinstance(result, Exception)
+            if not alive:
+                self._connected = False
+            return alive
+        except Exception as e:
+            logger.warning(f"Modbus probe failed for {self.ip}:{self.port} — {e}")
+            self._connected = False
+            return False
+
     async def read_multiple(self, tags: List[Tag]) -> List[TagReading]:
         """Read multiple tags"""
         readings = []

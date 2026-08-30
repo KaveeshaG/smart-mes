@@ -75,3 +75,8 @@ class ProtocolClient(ABC):
     def is_connected(self) -> bool:
         """Check connection status"""
         pass
+
+    async def probe(self) -> bool:
+        """Actively probe the device with a lightweight read to verify the connection is alive.
+        Subclasses should override this to attempt real I/O; the default falls back to is_connected."""
+        return self.is_connected

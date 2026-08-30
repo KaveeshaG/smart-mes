@@ -27,6 +27,8 @@ class DeviceResponse(BaseModel):
     model: Optional[str]
     supported_protocols: List[str]
     primary_protocol: Optional[str]
+    port: int = 502
+    modbus_unit_id: int = 1
     is_active: bool
     last_seen: Optional[datetime]
     created_at: datetime
